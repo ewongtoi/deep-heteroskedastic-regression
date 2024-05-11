@@ -4,7 +4,7 @@ job-uci.sh:      slurm file to launch job to fit neural networks to uci regressi
 job
 
 ft-exps:    directory to store results from running job-parallel-ft.sh
-synth-exps: directory to store results from running job-parallel-synth.sh
+synth-exps: directory to store results from running job-1d.sh
 uci-exps:   directory to store results from running job-uci-array.sh
 
 train_ft.py:    solves FT
