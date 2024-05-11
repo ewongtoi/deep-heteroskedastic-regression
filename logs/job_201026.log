@@ -1,7 +1,0 @@
-./synth-exps/run-0/
-Traceback (most recent call last):
-  File "./train_1d.py", line 17, in <module>
-    from heteroskedastic_nns.utils.utils import run_exp, plot_result, plot_sd_res, make_heatmap, plot_parallel_model, gam_rho_to_alpha_beta
-  File "/home/ewongtoi/Documents/UAI-camera/heteroskedastic_nns/utils/utils.py", line 12, in <module>
-    from heteroskedastic_nns.parallel_model import SplitParallelFF, ParallelFF
-ImportError: cannot import name 'SplitParallelFF' from 'heteroskedastic_nns.parallel_model' (/home/ewongtoi/Documents/UAI-camera/heteroskedastic_nns/parallel_model.py)
