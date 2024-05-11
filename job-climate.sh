@@ -13,8 +13,8 @@
 
 SEED=$((SLURM_ARRAY_TASK_ID + 100))
 OUTPUT_PATH="output_${SLURM_ARRAY_TASK_ID}.txt"
-#BMP="./climate-exps/run-${SLURM_ARRAY_TASK_ID}/"
-BMP="/extra/ucibdl0/ewongtoi/heteroskedastic_nns/climate_exps/solar-flux-beta-nll/run-${SLURM_ARRAY_TASK_ID}/"
+BMP="./climate-exps/run-${SLURM_ARRAY_TASK_ID}/"
+
 echo $BMP
 
 ~/anaconda3/envs/my_laplace/bin/python ./train_climate.py \

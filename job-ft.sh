@@ -13,7 +13,7 @@
 
 SEED=$((SLURM_ARRAY_TASK_ID + 100))
 
-BMP="./nfe-exps/run-${SLURM_ARRAY_TASK_ID}/"
+BMP="./ft-exps/run-${SLURM_ARRAY_TASK_ID}/"
 echo $BMP
 
 
