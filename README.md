@@ -1,10 +1,19 @@
+
+# Repository for "Understanding Pathologies of Deep Heteroskedastic Regression
+
+## Repo Structure
+
+### Experiments
+ft-exps:    directory to store results from running job-parallel-ft.sh
+synth-exps: directory to store results from running job-1d.sh
+uci-exps:   directory to store results from running job-uci-array.sh
+
+### Jobs
 job-parallel-nfe.sh:    slurm file to solve NFE
 job-1d.sh: slurm file to launch job that fits neural networks to 1d data
 job-uci.sh:      slurm file to launch job to fit neural networks to uci regression datasets
 
-ft-exps:    directory to store results from running job-parallel-ft.sh
-synth-exps: directory to store results from running job-1d.sh
-uci-exps:   directory to store results from running job-uci-array.sh
+
 
 train_ft.py:    solves FT
 train_1d.py: fits a neural network to 1d data
