@@ -20,7 +20,7 @@ BMP="./synth-exps/run-${SLURM_ARRAY_TASK_ID}/"
 
 echo $BMP
 
-~/anaconda3/envs/my_laplace/bin/python ./train_1d.py \
+python ./train_1d.py \
     --train_seed $SEED \
     --data_seed 1000 \
     --act_func leakyrelu \

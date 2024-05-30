@@ -9,6 +9,7 @@ import dill as pickle
 import warnings
 from heteroskedastic_nns.parallel_model import ParallelFF
 from heteroskedastic_nns.parallel_ft import ParallelDFT
+from heteroskedastic_nns.location_scale_model import LSFF
 
 from matplotlib.ticker import MaxNLocator
 import seaborn as sns
@@ -18,7 +19,22 @@ from matplotlib.colors import SymLogNorm
 
 mse = torch.nn.MSELoss()
 
+def shuffle_tensors(tensora, tensorb, dimension=0, device=None):
+    # Generate shuffled indices along the specified dimension
+    indices = torch.randperm(tensora.size(dimension)).to(device)
 
+    # Use the shuffled indices to rearrange the tensor along the specified dimension
+    shuffled_tensor_a = tensora.index_select(dimension, indices)
+    
+    shuffled_tensor_b = tensorb.index_select(dimension, indices)
+
+    return shuffled_tensor_a, shuffled_tensor_b
+
+def inplace_shuffle_tensor(tensora, tensorb, dim, device=None):
+    indices = torch.randperm(tensora.size(dim), device=device)
+
+    tensora[:] = tensora.index_select(dim, indices)
+    tensorb[:] = tensorb.index_select(dim, indices)
 
 def mixture_chunk_prediction(preds, n_chunks):
 
@@ -695,7 +711,191 @@ def run_uci_exp(x, y, device, seed, gammas, rhos,
     return fail_it, ppm
 
 
+def run_ls_exp(x, y, device, seed,
+            n_feature, n_output, act_func, scale_act_func, max_epochs, lr_min, lr_max, cycle_mode, base_model_path, gammas, rhos,
+            pre_trained_path=None, inv_param=False,
+            hidden_size=128, hidden_layers=2, step_size_up=1000, clip=1000, mean_warmup=20000,
+            diag=False,
+            B_dim=10,
+            B_sigma=2.,
+            batch_size=None,
+            mean_log=True, 
+            aug_x=False,
+            fourier=True):
 
+    fail_it = -1
+
+    keep_keys = ['loss', 'losses']
+    torch.manual_seed(seed)
+
+    start_offset = 0
+
+    hidden_sizes = [hidden_size for _ in range(hidden_layers)]
+
+    if pre_trained_path is None:
+
+
+        lsff = LSFF(n_feature, n_output, hidden_sizes=hidden_sizes, 
+                    activation_func=act_func, 
+                    scale_activation_func=scale_act_func, 
+                    inv_param=inv_param,
+                    gammas=gammas,
+                    rhos=rhos,
+                    diag=diag,
+                    B_dim=B_dim,
+                    B_sigma=B_sigma,
+                    family="gaussian")
+    else:
+        lsff = LSFF(n_feature, n_output, hidden_sizes=hidden_sizes, 
+                    activation_func=act_func, 
+                    scale_activation_func=scale_act_func,
+                    inv_param=inv_param,
+                    gammas=gammas,
+                    rhos=rhos,
+                    diag=diag,
+                    B_dim=B_dim,
+                    B_sigma=B_sigma,
+                    family="gaussian")
+        checkpoint = torch.load(pre_trained_path)
+        lsff.load_state_dict(checkpoint['model_state_dict'])
+        lsff.train()
+
+
+        start_offset = checkpoint['epoch'] + 1 # correct for off by one
+
+    lsff = lsff.to(device)
+
+
+
+    epochs = max_epochs
+
+    train_stats = []
+    grad_ints = []
+
+    
+    opt = torch.optim.Adam(lsff.parameters(), lr=lr_max)
+
+    scheduler = torch.optim.lr_scheduler.CyclicLR(opt, base_lr=lr_min, max_lr=lr_max, mode=cycle_mode, cycle_momentum=False, step_size_up=step_size_up)
+
+
+
+    if pre_trained_path is not None:
+        opt.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    
+    min_x = x.min()
+    max_x = x.max()
+    dense_x = torch.linspace(min_x, max_x, 3000)
+
+    dense_x = dense_x.to(device)
+
+    # big version x/y
+    bvx = x.unsqueeze(1).expand(x.shape[0], lsff.num_models, x.shape[1])
+    bvy = y.unsqueeze(1).expand(y.shape[0], lsff.num_models, y.shape[1])
+    
+    print(bvx.shape)
+
+    samp_size = x.shape[0]
+
+
+    num_batches = samp_size // batch_size
+    running_losses = []
+
+
+    for i in tqdm(range(epochs)):
+        running_loss = 0
+        
+        shuff_x, shuff_y = shuffle_tensors(bvx, bvy, 0, device)
+
+
+        for b in range(num_batches):
+            start_ind = b * batch_size
+            end_ind = min((b+1) * batch_size, samp_size)
+            
+            batch_x = shuff_x[start_ind:end_ind, :, :]
+            batch_y = shuff_y[start_ind:end_ind, :, :]
+        
+            opt.zero_grad()
+
+            if i < (mean_warmup):
+                # train the warmup on real data
+
+                stats = lsff.location_loss(batch_y, lsff.fourier_forward(batch_x))
+            else:
+                ### L2 pen
+                stats = lsff.gaussian_gam_rho_loss(batch_y, lsff.fourier_forward(batch_x)) 
+                
+                ### DE pen
+                #stats = lsff.gaussian_gam_rho_de_loss(batch_y, lsff.comp_grad_fourier_forward(batch_x)) 
+                
+
+            loss =  stats['loss'] 
+
+                            
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(lsff.parameters(), clip)
+
+            opt.step()
+            scheduler.step()
+
+            running_loss += loss.item()
+
+
+
+           
+            
+        if i == (mean_warmup - 1):
+            print('mw')
+
+            pickle.dump(grad_ints, open(base_model_path + str(i + start_offset) + '_grad_ints.p', 'wb'))
+            pickle.dump(train_stats, open(base_model_path + str(i + start_offset) + '_train_stats.p', 'wb'))
+            pickle.dump(lsff, open(base_model_path + str(i + start_offset) + '_aug_model.p', 'wb'))
+
+
+            PATH = base_model_path + 'full_checkpoint_epochs_' + str(i + start_offset) + '.pt'
+
+            torch.save({
+                        'epoch': i + start_offset,
+                        'model_state_dict': lsff.state_dict(),
+                        'optimizer_state_dict': opt.state_dict(),
+                        'scheduler_state_dict': scheduler.state_dict(),
+                        }, PATH)
+            
+            plot_ls_model(lsff, bvx, y, None, i, dense_x=None, path=base_model_path, show_plots=True, 
+                          bound_mn_y=None, bound_sd_y=None, fourier=fourier)
+
+        if (i % (epochs // 5000) == 0):
+            train_stats.append(stats)
+            running_losses.append(running_loss)
+ 
+
+
+        if loss.isnan():
+            print(i)
+            break
+
+
+    pickle.dump(train_stats, open(base_model_path + str(i + start_offset) + '_train_stats.p', 'wb'))
+    pickle.dump(lsff, open(base_model_path + str(i + start_offset) + '_aug_model.p', 'wb'))
+
+
+    PATH = base_model_path + 'full_checkpoint_epochs_' + str(i + start_offset) + '.pt'
+
+    plot_dense_x = torch.linspace(min_x, max_x, 300)[:, None]
+    plot_dense_x = plot_dense_x.to(device)
+
+    plot_ls_model(lsff, bvx, y, stats=train_stats, iteration=i, dense_x=None, path=base_model_path, ns_data=None, fourier=fourier)   
+ 
+    print(PATH)
+    torch.save({
+                'epoch': i + start_offset,
+                'model_state_dict': lsff.state_dict(),
+                'optimizer_state_dict': opt.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                }, PATH)
+    
+
+    return fail_it, lsff
 
 
 def grad_est(model, pt, eps, device):
@@ -729,6 +929,219 @@ def plot_sd_res(ax, x, res, x_plot, sd_plot):
     ax.plot(x_plot.squeeze().cpu().detach(), sd.squeeze().cpu().detach(), color="tab:orange")
 
 
+def plot_ls_model(lsm, x, y, stats, iteration, dense_x=None, path=None, 
+                  show_plots=False, bound_mn_y=None, bound_sd_y=None, ns_data=None,
+                  fourier=False):
+
+    family = lsm.family
+    
+    if ns_data is not None:
+        plot_ns = True
+    else:
+        plot_ns = False
+
+    pts_x = x.sort()[0]
+    cts_x = pts_x
+    if dense_x is not None:
+        cts_x = dense_x.sort()[0]
+    
+    plot_loss = stats is not None
+
+    if plot_loss:
+        loss_grid = torch.stack([l['losses'] for l in stats]).view(len(stats), 
+                                                               len(lsm.unique_gammas), len(lsm.unique_rhos)).cpu().detach() 
+
+    y_labs = lsm.gammas.view(len(lsm.unique_gammas), len(lsm.unique_rhos)).cpu().detach() 
+    x_labs = lsm.rhos.view(len(lsm.unique_gammas), len(lsm.unique_rhos)).cpu().detach() 
+
+
+    size=4
+
+    fig_res_sds, axs_res_sds = plt.subplots(len(lsm.unique_gammas), len(lsm.unique_rhos),
+                                          figsize=(len(lsm.unique_gammas)*size, len(lsm.unique_rhos)*size), sharex=True, sharey=False)
+    fig_res_sds.tight_layout(pad=2.75)
+
+    fig_mn, axs_mn = plt.subplots(len(lsm.unique_gammas), len(lsm.unique_rhos),
+                                  figsize=(len(lsm.unique_gammas)*size, len(lsm.unique_rhos)*size), sharex=True, sharey=False)
+    fig_mn.tight_layout(pad=2.75)
+    axs_dict = {"res_sds":axs_res_sds, 
+              "mns": axs_mn}
+
+
+    if plot_loss:
+        fig_loss, axs_loss = plt.subplots(len(lsm.unique_gammas), len(lsm.unique_rhos),
+                                      figsize=(len(lsm.unique_gammas)*size, len(lsm.unique_rhos)*size), sharex=True, sharey=False)
+        fig_loss.tight_layout(pad=2.75)
+        axs_dict["loss"] = axs_loss
+        
+    if plot_ns:
+        fig_ns, axs_ns = plt.subplots(len(lsm.unique_gammas), len(lsm.unique_rhos),
+                                      figsize=(len(lsm.unique_gammas)*size, len(lsm.unique_rhos)*size), sharex=True, sharey=False)
+        fig_ns.tight_layout(pad=2.75)
+        axs_dict["ns"] = axs_ns        
+
+        
+
+
+    # complete pass, strip out means, precisions (transformed)
+    if fourier:
+      plot_vals = lsm.fourier_forward(pts_x)
+    else:
+      plot_vals = lsm(pts_x)
+      
+    pm_mns = plot_vals["location"]
+    pm_mns = pm_mns.view((len(pts_x), len(lsm.unique_gammas), len(lsm.unique_rhos))).cpu().detach() 
+    
+    if family=="gaussian":
+        pm_sds = plot_vals["scale"]
+        pm_sds = pm_sds.view((len(pts_x), len(lsm.unique_gammas), len(lsm.unique_rhos))).cpu().detach()
+    elif family=="laplace":
+        pm_sds = plot_vals["scale"]
+        pm_sds = pm_sds.view((len(pts_x), len(lsm.unique_gammas), len(lsm.unique_rhos))).pow(-1).cpu().detach() * math.sqrt(2)
+    elif family=="cauchy":
+        pm_sds = plot_vals["scale"]
+        pm_sds = pm_sds.view((len(pts_x), len(lsm.unique_gammas), len(lsm.unique_rhos))).cpu().detach()
+    elif family=="natural":
+        pm_sds = -(plot_vals["scale"] * (-2)).pow(-.5)
+        pm_sds = pm_sds.view((len(pts_x), len(lsm.unique_gammas), len(lsm.unique_rhos))).cpu().detach()
+
+        pm_mns = plot_vals["location"] * plot_vals["scale"] * (-.5)
+        pm_mns = pm_mns.view((len(pts_x), len(lsm.unique_gammas), len(lsm.unique_rhos))).cpu().detach() 
+    if fourier:
+      cts_plot_vals = lsm.fourier_forward(cts_x)
+    else:
+      cts_plot_vals = lsm(cts_x)
+    cts_pm_mns = cts_plot_vals["location"]
+    cts_pm_mns = cts_pm_mns.view((len(cts_x), len(lsm.unique_gammas), len(lsm.unique_rhos))).cpu().detach() 
+    
+    if family=="gaussian":
+        cts_pm_sds = cts_plot_vals["scale"]
+        cts_pm_sds = cts_pm_sds.view((len(cts_x), len(lsm.unique_gammas), len(lsm.unique_rhos))).cpu().detach()
+    elif family=="laplace":
+        cts_pm_sds = cts_plot_vals["scale"]
+        cts_pm_sds = cts_pm_sds.view((len(cts_x), len(lsm.unique_gammas), len(lsm.unique_rhos))).pow(-1).cpu().detach() * math.sqrt(2)
+    elif family=="cauchy":
+        cts_pm_sds = cts_plot_vals["scale"]
+        cts_pm_sds = cts_pm_sds.view((len(cts_x), len(lsm.unique_gammas), len(lsm.unique_rhos))).cpu().detach()
+    elif family=="natural":
+        cts_pm_sds = -(plot_vals["scale"] * (-2)).pow(-.5)
+        cts_pm_sds = cts_pm_sds.view((len(cts_x), len(lsm.unique_gammas), len(lsm.unique_rhos))).cpu().detach()
+
+        cts_pm_mns = plot_vals["location"] * plot_vals["scale"] * (-.5)
+        cts_pm_mns = cts_pm_mns.view((len(cts_x), len(lsm.unique_gammas), len(lsm.unique_rhos))).cpu().detach() 
+    
+
+    if cts_pm_sds.sum().isnan():
+       print('nan')
+    
+
+
+    
+    x_plot = x.cpu().detach()[:, 0, :].flatten()
+    cts_x_plot = cts_x.cpu().detach()[:, 0, :].flatten()
+    y_plot = y.cpu().detach().flatten()
+
+    # each value of reg for the location network
+    for i in range(len(lsm.unique_gammas)):
+
+        # each value of reg for the scale network
+        for j in range(len(lsm.unique_rhos)):
+          
+
+            if j == 0:
+                for _, axs in axs_dict.items():
+                    axs[i][j].set_ylabel(r"rho: {:.2E}".format(y_labs[i][0]))
+
+            if i == len(lsm.unique_gammas)-1:
+                for _, axs in axs_dict.items():
+                    axs[i][j].set_xlabel(r"gamma: {:.2E}".format(x_labs[0][j]))
+
+
+          
+            mns = pm_mns[:, i, j]
+            sds = pm_sds[:, i, j]
+
+            cts_mns = cts_pm_mns[:, i, j]
+            cts_sds = cts_pm_sds[:, i, j]
+
+            resids = (mns - y_plot).abs()
+            
+            if family == "gaussian":
+                # fill in bands \pm 1 and 2 sds
+                band = cts_sds 
+                axs_dict['mns'][i][j].fill_between(cts_x_plot.cpu().flatten(), 
+                                                   (cts_mns-band).flatten(), 
+                                                   (cts_mns+band).flatten(), color='b', alpha=.2)
+                axs_dict['mns'][i][j].fill_between(cts_x_plot.cpu().flatten(), 
+                                                   (cts_mns-2*band).flatten(), 
+                                                   (cts_mns+2*band).flatten(), color='b', alpha=.1)
+            elif family == "laplace":
+                # convert sd back to "b" (scale) then find relevant quantile for 95%
+                band = (cts_sds / math.sqrt(2)) * torch.log(torch.tensor(2 * .05)) 
+                axs_dict['mns'][i][j].fill_between(cts_x_plot.cpu().flatten(), 
+                                                   (cts_mns-band).flatten(), 
+                                                   (cts_mns+band).flatten(), color='b', alpha=.1)
+            elif family == "cauchy":
+                cauchy_distribution = torch.distributions.Cauchy(0., 1.)
+                quantile = cauchy_distribution.icdf(torch.tensor(.95))
+                band = cts_sds * quantile
+                
+                axs_dict['mns'][i][j].fill_between(cts_x_plot.cpu().flatten(), 
+                                                   (cts_mns-band).flatten(), 
+                                                   (cts_mns+band).flatten(), color='b', alpha=.1)
+                
+            
+            axs_dict['mns'][i][j].scatter(x_plot, y_plot)
+            axs_dict['mns'][i][j].plot(cts_x_plot, cts_mns, c='tab:orange')
+          
+            if bound_mn_y is not None:
+                axs_dict['mns'][i][j].set_ylim(-bound_mn_y, bound_mn_y)
+          
+
+            axs_dict['res_sds'][i][j].scatter(x_plot, resids)
+            axs_dict['res_sds'][i][j].plot(cts_x_plot, cts_sds, c='tab:orange')
+          
+            if plot_loss:
+                axs_dict['loss'][i][j].plot(loss_grid[:, i, j])
+            
+            if plot_ns:
+                axs_dict['ns'][i][j].plot(ns_data[:, i, j])
+                axs_dict['ns'][i][j].set_ylim(-.1, 12.)
+
+            if bound_sd_y is not None:
+                axs_dict['res_sds'][i][j].set_ylim(-.1, bound_sd_y)
+          
+      
+
+        print(i)
+      
+
+
+    fig_res_sds.suptitle('Synthetic: Pred SDs over Residuals ' + str(iteration), size=50)
+    fig_res_sds.subplots_adjust(top=0.95)
+
+
+    fig_mn.suptitle('Synthetic: Means ' + str(iteration), size=50)
+    fig_mn.subplots_adjust(top=0.95)
+
+    if plot_loss:
+        fig_loss.suptitle('losses ' + str(iteration), size=50)
+        fig_loss.subplots_adjust(top=0.95)
+
+    if plot_ns:
+        fig_ns.suptitle('noise scales' + str(iteration), size=50)
+        fig_ns.subplots_adjust(top=0.95)
+  
+    if path is not None: 
+        fig_mn.savefig(path +'/plots/mean_' + str(iteration) + '.png')
+        fig_res_sds.savefig(path +'/plots/res_sd_' + str(iteration) + '.png')
+        if plot_loss:
+            fig_loss.savefig(path +'/plots/loss_' + str(iteration) + '.png')
+  
+    if show_plots:
+        plt.show()
+
+    plt.close('all')
 
 def plot_parallel_model(ppm, x, y, stats, iteration, dense_x=None, path=None, show_plots=False, bound_mn_y=None, bound_sd_y=None, laplace=False):
   gammas = ppm.unique_gammas

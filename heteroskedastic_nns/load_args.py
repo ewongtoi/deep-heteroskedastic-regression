@@ -47,6 +47,13 @@ def dataset_args(parser):
     group.add_argument("--samp_size", type=int, default=252, help="sample size for sim'd")
     group.add_argument("--data_seed", type=int, default=1234321, help="Seed for datageneration.")
 
+def fourier_args(parser):
+    group = parser.add_argument_group("arguments for fourier mapping")
+    group.add_argument("--B_dim", type=int, default=None, help="dim of fourier")
+    group.add_argument("--B_sigma", type=float, default=None, help="variance for weights")
+    group.add_argument("--scale_act_func", type=str, default="softplus", help="activation funciton for final layer of scale")
+    group.add_argument("--inv_param", action="store_true", help="model inverse scale")
+
 
 def logging_args(parser):
     group = parser.add_argument_group("arguments for paths to store results.")
@@ -114,6 +121,26 @@ def get_args():
 
     return args
 
+def get_fourier_args():
+
+    parser = argparse.ArgumentParser()
+
+    general_args(parser)
+    model_args(parser)
+    train_args(parser)
+    logging_args(parser)
+    dataset_args(parser)
+    fourier_args(parser)
+
+    args = parser.parse_args()
+
+
+    if not args.dont_print_args:
+        print_args(vars(args))
+
+
+    return args
+
 def get_ft_args():
 
     parser = argparse.ArgumentParser()
@@ -169,3 +196,4 @@ def get_int_args():
 
 
     return args
+
