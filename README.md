@@ -1,8 +1,11 @@
-# Understanding Pathologies of Deep Heteroskedastic Regression
+# Phase Transitions in Mean-Variance Regression
 
-This repository contains code and materials for the paper **“Understanding Pathologies of Deep Heteroskedastic Regression.”**  
-The work studies common failure modes in training deep models for heteroskedastic (input-dependent) uncertainty and provides both theoretical analysis and a practical recommendation.
+This repository contains code and materials for our research on pathologies, stability, and phase transitions in deep mean–variance (heteroskedastic) regression.  
+It supports both the UAI 2024 paper and the extended arXiv preprint (under review), which have different titles.
 
 ## Papers
-- **arXiv (extended preprint, under review):** https://www.arxiv.org/abs/2511.22004
-- **UAI Proceedings version:** https://openreview.net/pdf?id=n5faLvrsA0
+- **Understanding Pathologies of Deep Heteroskedastic Regression** (UAI 2024 Proceedings)  
+  PDF: https://openreview.net/pdf?id=n5faLvrsA0
+
+- **On the Effect of Regularization on Nonparametric Mean-Variance Regression** (arXiv extended preprint, under review)  
+  PDF: https://www.arxiv.org/abs/2511.22004
